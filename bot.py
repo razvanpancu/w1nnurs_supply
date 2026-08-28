@@ -1494,6 +1494,66 @@ async def render_admin_orders(query, filter_name="ACTIVE", page=0):
     )
 
 
+
+ORDER_STATUS_FLOW_V13 = [
+    "PENDING_APPROVAL",
+    "AWAITING_PAYMENT",
+    "PAID",
+    "PREPARING",
+    "SHIPPED",
+    "COMPLETED",
+]
+
+
+def next_order_status_v13(status):
+    try:
+        idx = ORDER_STATUS_FLOW_V13.index(status)
+    except ValueError:
+        return None
+    if idx >= len(ORDER_STATUS_FLOW_V13) - 1:
+        return None
+    return ORDER_STATUS_FLOW_V13[idx + 1]
+
+
+def previous_order_status_v13(status):
+    try:
+        idx = ORDER_STATUS_FLOW_V13.index(status)
+    except ValueError:
+        return None
+    if idx <= 0:
+        return None
+    return ORDER_STATUS_FLOW_V13[idx - 1]
+
+
+def status_button_label_v13(status):
+    labels = {
+        "AWAITING_PAYMENT": "⏳ AWAITING PAYMENT",
+        "PAID": "💰 MARK AS PAID",
+        "PREPARING": "📦 START PREPARING",
+        "SHIPPED": "🚚 MARK AS SHIPPED",
+        "COMPLETED": "🏁 COMPLETE ORDER",
+    }
+    return labels.get(status, status.replace("_", " ").title())
+
+
+async def notify_order_status_v13(context, order):
+    status = order.get("status", "")
+    label = ORDER_STATUS_LABELS.get(status, status.replace("_", " ").title())
+    try:
+        await context.bot.send_message(
+            chat_id=order["user_id"],
+            text=(
+                f"🏆 <b>W1NNURS ORDER UPDATE</b>\n\n"
+                f"Order <code>#O{order['order_id']}</code>\n"
+                f"Status: <b>{label}</b>"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+
 async def render_admin_order_detail(query, order_id, filter_name="ACTIVE", page=0):
     order = orders.get(order_id)
     if not order:
@@ -1517,22 +1577,38 @@ async def render_admin_order_detail(query, order_id, filter_name="ACTIVE", page=
         )
 
     buttons = []
+    current_status = order.get("status")
 
-    if order.get("status") == "PENDING_APPROVAL":
+    if current_status == "PENDING_APPROVAL":
         buttons.append([
             InlineKeyboardButton("✅ APPROVE", callback_data=f"orderapprove:{order_id}"),
             InlineKeyboardButton("❌ DECLINE", callback_data=f"orderdecline:{order_id}"),
         ])
-    else:
-        buttons.extend([
-            [
-                InlineKeyboardButton("💰 PAID", callback_data=f"orderstatus:{order_id}:PAID"),
-                InlineKeyboardButton("📦 PREPARING", callback_data=f"orderstatus:{order_id}:PREPARING"),
-            ],
-            [
-                InlineKeyboardButton("🚚 SHIPPED", callback_data=f"orderstatus:{order_id}:SHIPPED"),
-                InlineKeyboardButton("🏁 COMPLETED", callback_data=f"orderstatus:{order_id}:COMPLETED"),
-            ],
+    elif current_status not in ("DECLINED", "COMPLETED"):
+        next_status = next_order_status_v13(current_status)
+        previous_status = previous_order_status_v13(current_status)
+
+        if next_status:
+            buttons.append([
+                InlineKeyboardButton(
+                    status_button_label_v13(next_status),
+                    callback_data=f"v13next:{order_id}:{filter_name}:{page}"
+                )
+            ])
+
+        if previous_status:
+            buttons.append([
+                InlineKeyboardButton(
+                    "↩️ PREVIOUS STATUS",
+                    callback_data=f"v13prev:{order_id}:{filter_name}:{page}"
+                )
+            ])
+    elif current_status == "COMPLETED":
+        buttons.append([
+            InlineKeyboardButton(
+                "↩️ PREVIOUS STATUS",
+                callback_data=f"v13prev:{order_id}:{filter_name}:{page}"
+            )
         ])
 
     buttons.append([
@@ -1645,6 +1721,56 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             int(row_num),
             int(brand_page),
         )
+        return
+
+    if data.startswith("v13next:"):
+        _, order_id_raw, filter_name, page_raw = data.split(":", 3)
+        if query.from_user.id not in ADMIN_IDS:
+            await query.answer("Admin only.", show_alert=True)
+            return
+
+        order_id = int(order_id_raw)
+        order = orders.get(order_id)
+        if not order:
+            await query.answer("Order not found.", show_alert=True)
+            return
+
+        current = order.get("status")
+        next_status = next_order_status_v13(current)
+        if not next_status:
+            await query.answer("No next status available.", show_alert=True)
+            return
+
+        order["status"] = next_status
+        save_order(order)
+        await notify_order_status_v13(context, order)
+        await query.answer("Status updated.")
+        await render_admin_order_detail(query, order_id, filter_name, int(page_raw))
+        return
+
+    if data.startswith("v13prev:"):
+        _, order_id_raw, filter_name, page_raw = data.split(":", 3)
+        if query.from_user.id not in ADMIN_IDS:
+            await query.answer("Admin only.", show_alert=True)
+            return
+
+        order_id = int(order_id_raw)
+        order = orders.get(order_id)
+        if not order:
+            await query.answer("Order not found.", show_alert=True)
+            return
+
+        current = order.get("status")
+        previous_status = previous_order_status_v13(current)
+        if not previous_status:
+            await query.answer("No previous status available.", show_alert=True)
+            return
+
+        order["status"] = previous_status
+        save_order(order)
+        await notify_order_status_v13(context, order)
+        await query.answer("Status moved back.")
+        await render_admin_order_detail(query, order_id, filter_name, int(page_raw))
         return
 
     if data.startswith("admorders:"):
