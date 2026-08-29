@@ -396,6 +396,8 @@ async def edit_brands(query, page=0):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and context.args[0].lower() == "stock":
+        v161_track(update.effective_user.id, "OPEN_STOCK")
+        v20_track(update.effective_user.id, "OPEN_STOCK")
         await send_brands_message(update.message)
         return
 
@@ -538,11 +540,11 @@ async def show_product(query, sheet_id, row_num, brand_page):
         )
     ])
     buttons.append([
-        InlineKeyboardButton("📈 Search StockX", url=urls["stockx"]),
-        InlineKeyboardButton("🔎 Google", url=urls["google"]),
+        InlineKeyboardButton("📈 Search StockX", callback_data=f"research:stockx:{sheet_id}:{row_num}"),
+        InlineKeyboardButton("🔎 Google", callback_data=f"research:google:{sheet_id}:{row_num}"),
     ])
     buttons.append([
-        InlineKeyboardButton("🖼 Google Images", url=urls["images"])
+        InlineKeyboardButton("🖼 Google Images", callback_data=f"research:images:{sheet_id}:{row_num}")
     ])
     buttons.append([
         InlineKeyboardButton(
@@ -1959,6 +1961,18 @@ def v20_finalize_previous_season():
     conn.close()
 
 
+async def trackstatus_command_v201(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    actions = ["OPEN_STOCK","BRAND","PRODUCT","STOCKX","GOOGLE","IMAGES","SIZE","ASK_PRICE","CART"]
+    lines = ["🧪 <b>TRACKING STATUS</b>", ""]
+    for action in actions:
+        vals = v161_values(uid, action)
+        lines.append(f"{action}: <b>{len(vals)}</b>")
+    weekly, weekly_xp = v20_weekly_state(uid)
+    lines += ["", f"Weekly XP: <b>{weekly_xp}</b>"]
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 async def dashboard_command_v20(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     stats = v161_league_stats(uid)
@@ -2823,23 +2837,26 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("brands:"):
+        v161_track(query.from_user.id, "OPEN_STOCK")
+        v20_track(query.from_user.id, "OPEN_STOCK")
         page = int(data.split(":", 1)[1])
         await query.answer()
         await edit_brands(query, page)
         return
 
     if data.startswith("brand:"):
-        v161_track(query.from_user.id, "BRAND", data)
-        v20_track(query.from_user.id, "BRAND", data)
         _, sheet_id, page = data.split(":", 2)
+        v161_track(query.from_user.id, "BRAND", str(sheet_id))
+        v20_track(query.from_user.id, "BRAND", str(sheet_id))
         await query.answer()
         await show_brand_stock(query, int(sheet_id), int(page))
         return
 
     if data.startswith("product:"):
-        v161_track(query.from_user.id, "PRODUCT", data)
-        v20_track(query.from_user.id, "PRODUCT", data)
         _, sheet_id, row_num, brand_page = data.split(":", 3)
+        product_key = f"{sheet_id}:{row_num}"
+        v161_track(query.from_user.id, "PRODUCT", product_key)
+        v20_track(query.from_user.id, "PRODUCT", product_key)
         await query.answer()
         await show_product(
             query,
@@ -2897,6 +2914,28 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "v17seasonboard":
         await query.answer()
         await render_season_board_v17(query)
+        return
+
+    if data.startswith("research:"):
+        _, kind, sheet_id, row_num = data.split(":", 3)
+        title, product = find_product(int(sheet_id), int(row_num))
+        if not product:
+            await query.answer("Product is no longer available.", show_alert=True)
+            return
+        urls = research_urls(product["name"])
+        if kind == "stockx":
+            action, label, url = "STOCKX", "📈 OPEN STOCKX", urls["stockx"]
+        elif kind == "google":
+            action, label, url = "GOOGLE", "🔎 OPEN GOOGLE", urls["google"]
+        else:
+            action, label, url = "IMAGES", "🖼 OPEN GOOGLE IMAGES", urls["images"]
+        v161_track(query.from_user.id, action)
+        v20_track(query.from_user.id, action, f"{sheet_id}:{row_num}")
+        await query.answer("Mission progress saved ✅")
+        await query.message.reply_text(
+            f"{html.escape(product['name'])}\n\nResearch link 👇",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(label, url=url)]])
+        )
         return
 
     if data.startswith("v161research:"):
@@ -3093,9 +3132,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("cartadd:"):
-        v161_track(query.from_user.id, "CART")
-        v20_track(query.from_user.id, "CART", data)
         _, sheet_id, row_num, brand_page = data.split(":", 3)
+        v161_track(query.from_user.id, "SIZE")
+        v20_track(query.from_user.id, "SIZE", f"{sheet_id}:{row_num}")
         await query.answer()
         await cart_choose_size(query, int(sheet_id), int(row_num), int(brand_page))
         return
@@ -3110,6 +3149,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, sheet_id, row_num, brand_page, size, qty = data.split(":", 5)
         await query.answer()
         await cart_add_item(query, int(sheet_id), int(row_num), int(brand_page), size, int(qty))
+        v161_track(query.from_user.id, "CART")
+        v20_track(query.from_user.id, "CART", f"{sheet_id}:{row_num}")
         return
 
     if data == "cartview":
@@ -3227,6 +3268,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("ask:"):
         _, sheet_id, row_num, size = data.split(":", 3)
+        v161_track(query.from_user.id, "ASK_PRICE")
+        v161_track(query.from_user.id, "SIZE")
+        v20_track(query.from_user.id, "ASK_PRICE", f"{sheet_id}:{row_num}:{size}")
+        v20_track(query.from_user.id, "SIZE", f"{sheet_id}:{row_num}:{size}")
         await ask_price(query, int(sheet_id), int(row_num), size)
         return
 
@@ -3590,6 +3635,7 @@ def main():
     app.add_handler(CommandHandler("league", league_command_v15))
     app.add_handler(CommandHandler("season", season_command_v17))
     app.add_handler(CommandHandler("dashboard", dashboard_command_v20))
+    app.add_handler(CommandHandler("trackstatus", trackstatus_command_v201))
     app.add_handler(CommandHandler("weekly", weekly_command_v20))
     app.add_handler(CommandHandler("badges", badges_command_v20))
     app.add_handler(CommandHandler("watchlist", watchlist_command_v20))
