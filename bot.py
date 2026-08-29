@@ -411,6 +411,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     v161_track(update.effective_user.id, "OPEN_STOCK")
+    v20_track(update.effective_user.id, "OPEN_STOCK")
     if update.effective_chat.type in ("group", "supergroup"):
         await update.message.reply_text(
             "📦 <b>W1NNURS LIVE STOCK</b>\n\n"
@@ -1721,6 +1722,355 @@ async def render_admin_orders(query, filter_name="ACTIVE", page=0):
 
 
 
+
+# v20 — W1NNURS RESELLER OS
+# Achievements + Hall of Fame + weekly challenges + streaks + watchlist
+# + reseller dashboard + unlocks + upcoming stock foundation.
+
+def v20_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS v20_activity (
+        user_id INTEGER NOT NULL,
+        activity_date TEXT NOT NULL,
+        action TEXT NOT NULL,
+        value TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(user_id, activity_date, action, value)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS v20_watchlist (
+        user_id INTEGER NOT NULL,
+        product_key TEXT NOT NULL,
+        brand TEXT NOT NULL DEFAULT '',
+        product TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(user_id, product_key)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS v20_hall_of_fame (
+        season_key TEXT PRIMARY KEY,
+        season_name TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        score INTEGER NOT NULL DEFAULT 0,
+        recorded_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS v20_badges (
+        user_id INTEGER NOT NULL,
+        badge_key TEXT NOT NULL,
+        earned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(user_id, badge_key)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS v20_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )""")
+    conn.commit()
+    return conn
+
+
+def v20_track(user_id, action, value=""):
+    from datetime import date
+    try:
+        conn = v20_db()
+        conn.execute(
+            "INSERT OR IGNORE INTO v20_activity(user_id,activity_date,action,value) VALUES(?,?,?,?)",
+            (int(user_id), date.today().isoformat(), str(action), str(value or "")),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("v20 activity error:", e)
+
+
+def v20_activity_days(user_id):
+    conn = v20_db()
+    rows = conn.execute(
+        "SELECT DISTINCT activity_date FROM v20_activity WHERE user_id=? ORDER BY activity_date",
+        (int(user_id),)
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def v20_week_key(day=None):
+    from datetime import date
+    d = day or date.today()
+    iso = d.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def v20_week_actions(user_id):
+    from datetime import datetime
+    conn = v20_db()
+    rows = conn.execute(
+        "SELECT activity_date,action,value FROM v20_activity WHERE user_id=?",
+        (int(user_id),)
+    ).fetchall()
+    conn.close()
+    result = []
+    current = v20_week_key()
+    for d, action, value in rows:
+        try:
+            if v20_week_key(datetime.fromisoformat(d).date()) == current:
+                result.append((d, action, value))
+        except Exception:
+            pass
+    return result
+
+
+V20_WEEKLY = [
+    ("W_BRANDS", "🏷 Explore 5 brands", 5, "BRAND", 40),
+    ("W_PRODUCTS", "👕 Check 15 products", 15, "PRODUCT", 60),
+    ("W_RESEARCH", "📈 Use market research 5 times", 5, "RESEARCH", 50),
+    ("W_CART", "🛒 Add 3 different products to cart", 3, "CART", 50),
+]
+
+
+def v20_weekly_state(user_id):
+    actions = v20_week_actions(user_id)
+    state = {}
+    xp = 0
+    for key, title, target, action, reward in V20_WEEKLY:
+        if action == "RESEARCH":
+            vals = {(a, v, d) for d, a, v in actions if a in ("STOCKX","GOOGLE","IMAGES")}
+            count = len(vals)
+        else:
+            vals = {v or d for d, a, v in actions if a == action}
+            count = len(vals)
+        done = count >= target
+        state[key] = (done, min(count, target), target, title, reward)
+        if done:
+            xp += reward
+    return state, xp
+
+
+def v20_streak(user_id):
+    # Weekly activity streak: at least one meaningful tracked action in consecutive ISO weeks.
+    from datetime import datetime, date, timedelta
+    days = v20_activity_days(user_id)
+    weeks = set()
+    for d in days:
+        try:
+            dd = datetime.fromisoformat(d).date()
+            iso = dd.isocalendar()
+            weeks.add((iso.year, iso.week))
+        except Exception:
+            pass
+    if not weeks:
+        return 0
+    today = date.today()
+    current_monday = today - timedelta(days=today.weekday())
+    streak = 0
+    cursor = current_monday
+    while True:
+        iso = cursor.isocalendar()
+        if (iso.year, iso.week) in weeks:
+            streak += 1
+            cursor -= timedelta(days=7)
+        else:
+            break
+    return streak
+
+
+def v20_watch_add(user_id, product_key, brand, product):
+    conn = v20_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO v20_watchlist(user_id,product_key,brand,product) VALUES(?,?,?,?)",
+        (int(user_id), str(product_key), str(brand), str(product))
+    )
+    conn.commit()
+    conn.close()
+
+
+def v20_watch_remove(user_id, product_key):
+    conn = v20_db()
+    conn.execute("DELETE FROM v20_watchlist WHERE user_id=? AND product_key=?",
+                 (int(user_id), str(product_key)))
+    conn.commit()
+    conn.close()
+
+
+def v20_watch_items(user_id):
+    conn = v20_db()
+    rows = conn.execute(
+        "SELECT product_key,brand,product FROM v20_watchlist WHERE user_id=? ORDER BY created_at DESC",
+        (int(user_id),)
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def v20_badge_catalog(user_id):
+    permanent = reseller_stats_v14(user_id)
+    season = v17_season_stats(user_id)
+    onboarding, _ = v161_beginner_state(user_id)
+    advanced, _ = v16_advanced_state(user_id)
+    streak = v20_streak(user_id)
+    completed_pieces = permanent.get("completed_pieces", 0)
+    completed_orders = permanent.get("completed_orders", 0)
+
+    definitions = [
+        ("ONBOARDING", "🎓 Vault Graduate", all(onboarding.values())),
+        ("FIRST_WIN", "🏁 First Win", completed_orders >= 1),
+        ("PCS_5", "📦 5 PCS Club", completed_pieces >= 5),
+        ("PCS_25", "📦 25 PCS Club", completed_pieces >= 25),
+        ("PCS_50", "💪 50 PCS Club", completed_pieces >= 50),
+        ("ADVANCED", "⚔️ Advanced Complete", bool(advanced) and all(advanced.values())),
+        ("STREAK_2", "🔥 2 Week Streak", streak >= 2),
+        ("STREAK_4", "🔥 4 Week Streak", streak >= 4),
+        ("SEASON_TOP", "🏆 Season Player", season.get("score", 0) > 0),
+    ]
+    return definitions
+
+
+def v20_sync_badges(user_id):
+    conn = v20_db()
+    for key, label, earned in v20_badge_catalog(user_id):
+        if earned:
+            conn.execute(
+                "INSERT OR IGNORE INTO v20_badges(user_id,badge_key) VALUES(?,?)",
+                (int(user_id), key)
+            )
+    conn.commit()
+    rows = conn.execute(
+        "SELECT badge_key FROM v20_badges WHERE user_id=? ORDER BY earned_at",
+        (int(user_id),)
+    ).fetchall()
+    conn.close()
+    earned_keys = {r[0] for r in rows}
+    labels = {k: label for k, label, _ in v20_badge_catalog(user_id)}
+    return [labels.get(k, k) for k in earned_keys]
+
+
+def v20_unlocks(user_id):
+    stats = v161_league_stats(user_id)
+    xp = stats.get("xp", 0)
+    onboarding, _ = v161_beginner_state(user_id)
+    return [
+        ("📦 Live Stock", True),
+        ("🎯 Advanced Missions", all(onboarding.values())),
+        ("🔥 Early Drop Preview", xp >= 350),
+        ("👀 Upcoming Stock", xp >= 700),
+        ("👑 Elite Area", xp >= 1200),
+    ]
+
+
+def v20_finalize_previous_season():
+    # Safe archival: only records a previous season if a leaderboard snapshot
+    # was explicitly stored in v20_meta by this version. No historical winner is invented.
+    conn = v20_db()
+    conn.close()
+
+
+async def dashboard_command_v20(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    stats = v161_league_stats(uid)
+    season = v17_season_stats(uid)
+    ranking = v17_all_season_stats()
+    rank = next((i for i, s in enumerate(ranking, 1) if s["user_id"] == uid), None)
+    badges = v20_sync_badges(uid)
+    streak = v20_streak(uid)
+    weekly, weekly_xp = v20_weekly_state(uid)
+    watch_count = len(v20_watch_items(uid))
+    beginner = stats.get("missions", {})
+    advanced = stats.get("advanced_missions", {})
+
+    lines = [
+        "🏆 <b>W1NNURS RESELLER DASHBOARD</b>",
+        "",
+        f"🏅 League: <b>{html.escape(str(stats.get('league','Rookie League')))}</b>",
+        f"⚡ Permanent XP: <b>{stats.get('xp',0)}</b>",
+        f"🔥 Activity streak: <b>{streak} week{'s' if streak != 1 else ''}</b>",
+        f"🏁 Season rank: <b>#{rank}</b>" if rank else "🏁 Season rank: <b>Unranked</b>",
+        f"⚡ Season score: <b>{season.get('score',0)}</b>",
+        "",
+        "📊 <b>BUSINESS</b>",
+        f"📦 Orders: <b>{stats.get('total_orders',0)}</b>",
+        f"✅ Completed: <b>{stats.get('completed_orders',0)}</b>",
+        f"👕 Completed pieces: <b>{stats.get('completed_pieces',0)}</b>",
+        "",
+        "🎯 <b>PROGRESS</b>",
+        f"🎓 Beginner: <b>{sum(bool(x) for x in beginner.values())}/{len(beginner)}</b>",
+        f"⚔️ Advanced: <b>{sum(bool(x) for x in advanced.values())}/{len(advanced)}</b>",
+        f"📅 Weekly: <b>{sum(1 for x in weekly.values() if x[0])}/{len(weekly)}</b> (+{weekly_xp} XP)",
+        f"❤️ Watchlist: <b>{watch_count}</b>",
+        "",
+        "🎖 <b>BADGES</b>",
+        " ".join(badges[-6:]) if badges else "<i>No badges yet — explore the club.</i>",
+    ]
+    buttons = [
+        [InlineKeyboardButton("📅 WEEKLY CHALLENGES", callback_data="v20weekly")],
+        [InlineKeyboardButton("🎖 BADGES & UNLOCKS", callback_data="v20badges")],
+        [InlineKeyboardButton("❤️ WATCHLIST", callback_data="v20watchlist")],
+        [InlineKeyboardButton("🏆 SEASON", callback_data="v17seasonboard")],
+    ]
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML",
+                                    reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def weekly_command_v20(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    state, xp = v20_weekly_state(uid)
+    lines = ["📅 <b>WEEKLY CHALLENGES</b>", f"<b>{v20_week_key()}</b>", ""]
+    for _, (done, count, target, title, reward) in state.items():
+        lines.append(f"{'✅' if done else '⬜'} {title} — <b>{count}/{target}</b> • +{reward} XP")
+    lines += ["", f"⚡ Weekly XP unlocked: <b>{xp}</b>",
+              "<i>Weekly challenges reset automatically each ISO week.</i>"]
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def badges_command_v20(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    badges = v20_sync_badges(uid)
+    unlocks = v20_unlocks(uid)
+    lines = ["🎖 <b>BADGES & UNLOCKS</b>", ""]
+    lines.append("<b>Earned badges</b>")
+    lines.extend([f"✅ {b}" for b in badges] or ["<i>No badges yet.</i>"])
+    lines += ["", "<b>Club access</b>"]
+    for label, unlocked in unlocks:
+        lines.append(f"{'🔓' if unlocked else '🔒'} {label}")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def watchlist_command_v20(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    items = v20_watch_items(update.effective_user.id)
+    lines = ["❤️ <b>MY WATCHLIST</b>", ""]
+    if not items:
+        lines.append("No watched products yet.")
+    else:
+        for _, brand, product in items[:30]:
+            lines.append(f"• <b>{html.escape(brand)}</b> — {html.escape(product)}")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def halloffame_command_v20(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = v20_db()
+    rows = conn.execute(
+        "SELECT season_name,user_id,score FROM v20_hall_of_fame ORDER BY season_key DESC LIMIT 24"
+    ).fetchall()
+    conn.close()
+    lines = ["👑 <b>W1NNURS HALL OF FAME</b>", ""]
+    if not rows:
+        lines.append("<i>The first Season Champion will appear here after a season is archived.</i>")
+    else:
+        for season_name, uid, score in rows:
+            lines.append(f"👑 <b>{html.escape(season_name)}</b> — {html.escape(v17_display_name(uid))} • {score} pts")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def upcoming_command_v20(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    unlocked = dict(v20_unlocks(uid)).get("👀 Upcoming Stock", False)
+    if not unlocked:
+        await update.message.reply_text(
+            "🔒 <b>UPCOMING STOCK</b>\n\nReach <b>Dynasty League / 700 XP</b> to unlock this section.",
+            parse_mode="HTML"
+        )
+        return
+    await update.message.reply_text(
+        "👀 <b>UPCOMING STOCK</b>\n\nNo upcoming drops have been published yet.\n"
+        "<i>This area is ready for future admin-controlled previews.</i>",
+        parse_mode="HTML"
+    )
+
+
 # v17 — W1NNURS SEASONS
 # Seasonal competition is separate from permanent XP/tier progression.
 
@@ -2480,6 +2830,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("brand:"):
         v161_track(query.from_user.id, "BRAND", data)
+        v20_track(query.from_user.id, "BRAND", data)
         _, sheet_id, page = data.split(":", 2)
         await query.answer()
         await show_brand_stock(query, int(sheet_id), int(page))
@@ -2487,6 +2838,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("product:"):
         v161_track(query.from_user.id, "PRODUCT", data)
+        v20_track(query.from_user.id, "PRODUCT", data)
         _, sheet_id, row_num, brand_page = data.split(":", 3)
         await query.answer()
         await show_product(
@@ -2495,6 +2847,51 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             int(row_num),
             int(brand_page),
         )
+        return
+
+    if data == "v20weekly":
+        await query.answer()
+        uid = query.from_user.id
+        state, xp = v20_weekly_state(uid)
+        lines = ["📅 <b>WEEKLY CHALLENGES</b>", f"<b>{v20_week_key()}</b>", ""]
+        for _, (done, count, target, title, reward) in state.items():
+            lines.append(f"{'✅' if done else '⬜'} {title} — <b>{count}/{target}</b> • +{reward} XP")
+        lines += ["", f"⚡ Weekly XP unlocked: <b>{xp}</b>"]
+        await query.edit_message_text("\n".join(lines), parse_mode="HTML",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏆 SEASON", callback_data="v17seasonboard")]]))
+        return
+
+    if data == "v20badges":
+        await query.answer()
+        uid = query.from_user.id
+        badges = v20_sync_badges(uid)
+        unlocks = v20_unlocks(uid)
+        lines = ["🎖 <b>BADGES & UNLOCKS</b>", ""]
+        lines += [f"✅ {b}" for b in badges] or ["<i>No badges yet.</i>"]
+        lines += ["", "<b>Club access</b>"]
+        lines += [f"{'🔓' if ok else '🔒'} {label}" for label, ok in unlocks]
+        await query.edit_message_text("\n".join(lines), parse_mode="HTML")
+        return
+
+    if data == "v20watchlist":
+        await query.answer()
+        items = v20_watch_items(query.from_user.id)
+        lines = ["❤️ <b>MY WATCHLIST</b>", ""]
+        lines += [f"• <b>{html.escape(b)}</b> — {html.escape(p)}" for _,b,p in items[:30]] or ["No watched products yet."]
+        await query.edit_message_text("\n".join(lines), parse_mode="HTML")
+        return
+
+    if data.startswith("v20watchadd:"):
+        await query.answer("Added to watchlist ❤️")
+        payload = data.split(":", 1)[1]
+        v20_watch_add(query.from_user.id, payload, "", payload)
+        v20_track(query.from_user.id, "WATCH", payload)
+        return
+
+    if data.startswith("v20watchremove:"):
+        payload = data.split(":", 1)[1]
+        v20_watch_remove(query.from_user.id, payload)
+        await query.answer("Removed from watchlist")
         return
 
     if data == "v17seasonboard":
@@ -2510,14 +2907,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         encoded = urllib.parse.quote_plus(query_text)
         if kind == "stockx":
             v161_track(query.from_user.id, "STOCKX")
+            v20_track(query.from_user.id, "STOCKX", query_text)
             url = f"https://stockx.com/search?s={encoded}"
             label = "📈 OPEN STOCKX"
         elif kind == "google":
             v161_track(query.from_user.id, "GOOGLE")
+            v20_track(query.from_user.id, "GOOGLE", query_text)
             url = f"https://www.google.com/search?q={encoded}"
             label = "🔎 OPEN GOOGLE"
         else:
             v161_track(query.from_user.id, "IMAGES")
+            v20_track(query.from_user.id, "IMAGES", query_text)
             url = f"https://www.google.com/search?tbm=isch&q={encoded}"
             label = "🖼 OPEN GOOGLE IMAGES"
         await query.answer("Mission progress saved.")
@@ -2694,6 +3094,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("cartadd:"):
         v161_track(query.from_user.id, "CART")
+        v20_track(query.from_user.id, "CART", data)
         _, sheet_id, row_num, brand_page = data.split(":", 3)
         await query.answer()
         await cart_choose_size(query, int(sheet_id), int(row_num), int(brand_page))
@@ -3188,6 +3589,12 @@ def main():
     app.add_handler(CommandHandler("profile", profile_command_v14))
     app.add_handler(CommandHandler("league", league_command_v15))
     app.add_handler(CommandHandler("season", season_command_v17))
+    app.add_handler(CommandHandler("dashboard", dashboard_command_v20))
+    app.add_handler(CommandHandler("weekly", weekly_command_v20))
+    app.add_handler(CommandHandler("badges", badges_command_v20))
+    app.add_handler(CommandHandler("watchlist", watchlist_command_v20))
+    app.add_handler(CommandHandler("halloffame", halloffame_command_v20))
+    app.add_handler(CommandHandler("upcoming", upcoming_command_v20))
     app.add_handler(CommandHandler("onboarding", league_command_v15))
     app.add_handler(CommandHandler("advanced", advanced_command_v16))
     app.add_handler(CommandHandler("leagueranking", league_ranking_command_v15))
