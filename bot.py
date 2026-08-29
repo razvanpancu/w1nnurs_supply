@@ -410,6 +410,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    v161_track(update.effective_user.id, "OPEN_STOCK")
     if update.effective_chat.type in ("group", "supergroup"):
         await update.message.reply_text(
             "📦 <b>W1NNURS LIVE STOCK</b>\n\n"
@@ -1374,8 +1375,27 @@ async def is_admin_or_owner_v12(update, context):
 
 
 
+
+async def advanced_command_v16(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stats=v161_league_stats(update.effective_user.id)
+    done=stats["advanced_missions"]
+    beginner_done=all(stats["missions"].values())
+    lines=["🔥 <b>W1NNURS ADVANCED MISSIONS</b>","",f"League: <b>{stats['league']}</b>",f"Total XP: <b>{stats['xp']}</b>",""]
+    if not beginner_done:
+        remaining=sum(1 for v in stats["missions"].values() if not v)
+        lines += ["🔒 <b>ADVANCED MISSIONS LOCKED</b>","","Finish your Beginner Missions first.",f"Remaining beginner missions: <b>{remaining}</b>"]
+    else:
+        lines += ["🔓 <b>ADVANCED MISSIONS UNLOCKED</b>","<i>Harder objectives. XP & status progression.</i>",""]
+        for key,title,desc,xp in V16_ADVANCED_MISSIONS:
+            icon="✅" if done.get(key) else "⬜"
+            lines.append(f"{icon} <b>{title}</b> • +{xp} XP\n   {desc} • <b>{v16_progress_text(update.effective_user.id,key)}</b>")
+    await update.message.reply_text("\n".join(lines),parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎯 BEGINNER MISSIONS",callback_data="v15league")],
+                                           [InlineKeyboardButton("🏆 MY PROFILE",callback_data="v15profile")]]))
+
+
 async def league_command_v15(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = v15_league_stats(update.effective_user.id)
+    stats = v161_league_stats(update.effective_user.id)
     done = stats["missions"]
     next_min, next_label, remaining = v15_next_level(stats["xp"])
 
@@ -1390,11 +1410,11 @@ async def league_command_v15(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "",
     ]
 
-    for key, title, description, xp in V15_BEGINNER_MISSIONS:
+    for key, title, description, xp in V161_BEGINNER_MISSIONS:
         icon = "✅" if done.get(key) else "⬜"
         lines.append(
             f"{icon} <b>{title}</b> • +{xp} XP\n"
-            f"   {description}"
+            f"   {description} • <b>{v161_progress(update.effective_user.id, key)}</b>"
         )
 
     if next_min is not None:
@@ -1411,6 +1431,10 @@ async def league_command_v15(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📋 MY ORDERS", callback_data="myorders")],
+            [InlineKeyboardButton("📈 TRY STOCKX", callback_data="v161research:stockx:streetwear")],
+            [InlineKeyboardButton("🔎 TRY GOOGLE", callback_data="v161research:google:streetwear")],
+            [InlineKeyboardButton("🖼 TRY IMAGES", callback_data="v161research:images:streetwear")],
+            [InlineKeyboardButton("🔥 ADVANCED MISSIONS", callback_data="v16advanced")],
             [InlineKeyboardButton("🏆 MY PROFILE", callback_data="v15profile")],
         ]),
     )
@@ -1627,6 +1651,106 @@ async def render_admin_orders(query, filter_name="ACTIVE", page=0):
 # v15 — W1NNURS Reseller League
 # Beginner missions intentionally give XP/progress only — no material reward.
 
+
+# v16.1 — Onboarding Missions
+# Beginner stage is exploration-only: NO order/submission/completion requirement.
+
+V161_BEGINNER_MISSIONS = [
+    ("OPEN_STOCK", "📦 Open The Vault", "Open Live Stock", 15),
+    ("EXPLORE_BRANDS", "🏷 Brand Explorer", "Open 3 different brands", 25),
+    ("EXPLORE_PRODUCTS", "👕 Product Explorer", "Open 5 different products", 30),
+    ("STOCKX", "📈 Market Check", "Use StockX research", 20),
+    ("GOOGLE", "🔎 Research Mode", "Use Google research", 20),
+    ("IMAGES", "🖼 Visual Check", "Use Google Images research", 20),
+    ("SIZE", "📏 Size Check", "Open a size selection", 20),
+    ("ASK_PRICE", "💬 Price Curious", "Open Ask Price for a product", 25),
+    ("CART", "🛒 Cart Training", "Add an item to your cart", 30),
+]
+
+
+def v161_init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS onboarding_progress (
+            user_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, action, value)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def v161_track(user_id, action, value=""):
+    try:
+        v161_init_db()
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "INSERT OR IGNORE INTO onboarding_progress(user_id, action, value) VALUES(?,?,?)",
+            (int(user_id), str(action), str(value or "")),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("Onboarding tracking error:", e)
+
+
+def v161_values(user_id, action):
+    try:
+        v161_init_db()
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            "SELECT value FROM onboarding_progress WHERE user_id=? AND action=?",
+            (int(user_id), str(action)),
+        ).fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
+def v161_beginner_state(user_id):
+    stock = bool(v161_values(user_id, "OPEN_STOCK"))
+    brands = v161_values(user_id, "BRAND")
+    products = v161_values(user_id, "PRODUCT")
+    done = {
+        "OPEN_STOCK": stock,
+        "EXPLORE_BRANDS": len(brands) >= 3,
+        "EXPLORE_PRODUCTS": len(products) >= 5,
+        "STOCKX": bool(v161_values(user_id, "STOCKX")),
+        "GOOGLE": bool(v161_values(user_id, "GOOGLE")),
+        "IMAGES": bool(v161_values(user_id, "IMAGES")),
+        "SIZE": bool(v161_values(user_id, "SIZE")),
+        "ASK_PRICE": bool(v161_values(user_id, "ASK_PRICE")),
+        "CART": bool(v161_values(user_id, "CART")),
+    }
+    xp = sum(xp for key, _, _, xp in V161_BEGINNER_MISSIONS if done.get(key))
+    return done, xp
+
+
+def v161_progress(user_id, key):
+    if key == "EXPLORE_BRANDS":
+        return f"{min(len(v161_values(user_id,'BRAND')),3)}/3"
+    if key == "EXPLORE_PRODUCTS":
+        return f"{min(len(v161_values(user_id,'PRODUCT')),5)}/5"
+    return "1/1" if v161_beginner_state(user_id)[0].get(key) else "0/1"
+
+
+def v161_league_stats(user_id):
+    stats = reseller_stats_v14(user_id)
+    missions, beginner_xp = v161_beginner_state(user_id)
+    advanced_done, advanced_xp = v16_advanced_state(user_id)
+    stats["missions"] = missions
+    stats["advanced_missions"] = advanced_done
+    stats["beginner_xp"] = beginner_xp
+    stats["advanced_xp"] = advanced_xp
+    stats["xp"] = beginner_xp + advanced_xp
+    stats["league"] = v15_level(stats["xp"])
+    return stats
+
+
 V15_BEGINNER_MISSIONS = [
     ("FIRST_ORDER", "🛒 First Move", "Submit your first order", 25),
     ("FIRST_COMPLETE", "✅ First Win", "Complete your first order", 50),
@@ -1634,6 +1758,41 @@ V15_BEGINNER_MISSIONS = [
     ("TWO_BRANDS", "🏷 Brand Explorer", "Complete orders containing 2 different brands", 60),
     ("THREE_ORDERS", "🔥 Getting Serious", "Complete 3 orders", 100),
 ]
+
+
+# v16 — Advanced Missions
+V16_ADVANCED_MISSIONS = [
+    ("TEN_PIECES","📦 Stock Builder","Complete 10 pieces",125),
+    ("FIVE_ORDERS","🔥 Consistency","Complete 5 orders",150),
+    ("FIVE_BRANDS","🌍 Brand Hunter","Complete products from 5 different brands",175),
+    ("TWENTY_PIECES","💪 Volume Player","Complete 20 pieces",225),
+    ("TEN_ORDERS","🏆 Serious Reseller","Complete 10 orders",300),
+    ("FIFTY_PIECES","💎 Heavy Hitter","Complete 50 pieces",500),
+]
+def v16_activity(user_id):
+    completed=v15_completed_orders(user_id)
+    pieces=sum(int(i.get("qty",0)) for o in completed for i in o.get("items",[]))
+    brands={str(i.get("brand","")).strip().lower() for o in completed for i in o.get("items",[]) if str(i.get("brand","")).strip()}
+    return completed,pieces,brands
+def v16_advanced_state(user_id):
+    completed,pieces,brands=v16_activity(user_id)
+    done={"TEN_PIECES":pieces>=10,"FIVE_ORDERS":len(completed)>=5,"FIVE_BRANDS":len(brands)>=5,
+          "TWENTY_PIECES":pieces>=20,"TEN_ORDERS":len(completed)>=10,"FIFTY_PIECES":pieces>=50}
+    return done,sum(xp for key,_,_,xp in V16_ADVANCED_MISSIONS if done.get(key))
+def v16_total_league_stats(user_id):
+    stats=v15_league_stats(user_id)
+    done,axp=v16_advanced_state(user_id)
+    stats["advanced_missions"]=done
+    stats["xp"]=stats["xp"]+axp
+    stats["league"]=v15_level(stats["xp"])
+    return stats
+def v16_progress_text(user_id,key):
+    completed,pieces,brands=v16_activity(user_id)
+    values={"TEN_PIECES":(pieces,10),"FIVE_ORDERS":(len(completed),5),"FIVE_BRANDS":(len(brands),5),
+            "TWENTY_PIECES":(pieces,20),"TEN_ORDERS":(len(completed),10),"FIFTY_PIECES":(pieces,50)}
+    cur,target=values[key]
+    return f"{min(cur,target)}/{target}"
+
 
 V15_LEVELS = [
     (1200, "👑 Elite League"),
@@ -2172,12 +2331,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("brand:"):
+        v161_track(query.from_user.id, "BRAND", data)
         _, sheet_id, page = data.split(":", 2)
         await query.answer()
         await show_brand_stock(query, int(sheet_id), int(page))
         return
 
     if data.startswith("product:"):
+        v161_track(query.from_user.id, "PRODUCT", data)
         _, sheet_id, row_num, brand_page = data.split(":", 3)
         await query.answer()
         await show_product(
@@ -2186,6 +2347,50 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             int(row_num),
             int(brand_page),
         )
+        return
+
+    if data.startswith("v161research:"):
+        parts = data.split(":", 2)
+        kind = parts[1]
+        query_text = parts[2] if len(parts) > 2 else ""
+        import urllib.parse
+        encoded = urllib.parse.quote_plus(query_text)
+        if kind == "stockx":
+            v161_track(query.from_user.id, "STOCKX")
+            url = f"https://stockx.com/search?s={encoded}"
+            label = "📈 OPEN STOCKX"
+        elif kind == "google":
+            v161_track(query.from_user.id, "GOOGLE")
+            url = f"https://www.google.com/search?q={encoded}"
+            label = "🔎 OPEN GOOGLE"
+        else:
+            v161_track(query.from_user.id, "IMAGES")
+            url = f"https://www.google.com/search?tbm=isch&q={encoded}"
+            label = "🖼 OPEN GOOGLE IMAGES"
+        await query.answer("Mission progress saved.")
+        await query.message.reply_text(
+            "Research unlocked 👇",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(label, url=url)]])
+        )
+        return
+
+    if data == "v16advanced":
+        await query.answer()
+        stats=v161_league_stats(query.from_user.id)
+        done=stats["advanced_missions"]
+        beginner_done=all(stats["missions"].values())
+        lines=["🔥 <b>W1NNURS ADVANCED MISSIONS</b>","",f"League: <b>{stats['league']}</b>",f"Total XP: <b>{stats['xp']}</b>",""]
+        if not beginner_done:
+            remaining=sum(1 for v in stats["missions"].values() if not v)
+            lines += ["🔒 <b>ADVANCED MISSIONS LOCKED</b>","","Finish your Beginner Missions first.",f"Remaining beginner missions: <b>{remaining}</b>"]
+        else:
+            lines += ["🔓 <b>ADVANCED MISSIONS UNLOCKED</b>","<i>Harder objectives. XP & status progression.</i>",""]
+            for key,title,desc,xp in V16_ADVANCED_MISSIONS:
+                icon="✅" if done.get(key) else "⬜"
+                lines.append(f"{icon} <b>{title}</b> • +{xp} XP\n   {desc} • <b>{v16_progress_text(query.from_user.id,key)}</b>")
+        await query.edit_message_text("\n".join(lines),parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎯 BEGINNER MISSIONS",callback_data="v15league")],
+                                               [InlineKeyboardButton("🏆 MY PROFILE",callback_data="v15profile")]]))
         return
 
     if data == "v15profile":
@@ -2227,9 +2432,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<i>XP & progress only — no reward.</i>",
             "",
         ]
-        for key, title, description, xp in V15_BEGINNER_MISSIONS:
+        for key, title, description, xp in V161_BEGINNER_MISSIONS:
             icon = "✅" if done.get(key) else "⬜"
-            lines.append(f"{icon} <b>{title}</b> • +{xp} XP\n   {description}")
+            lines.append(f"{icon} <b>{title}</b> • +{xp} XP\n   {description} • <b>{v161_progress(query.from_user.id, key)}</b>")
         if next_min is not None:
             lines.extend(["", f"🚀 Next league: <b>{next_label}</b> • {remaining} XP remaining"])
         await query.edit_message_text(
@@ -2328,6 +2533,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("cartadd:"):
+        v161_track(query.from_user.id, "CART")
         _, sheet_id, row_num, brand_page = data.split(":", 3)
         await query.answer()
         await cart_choose_size(query, int(sheet_id), int(row_num), int(brand_page))
@@ -2821,6 +3027,8 @@ def main():
     app.add_handler(CommandHandler("myorders", myorders_command_v12))
     app.add_handler(CommandHandler("profile", profile_command_v14))
     app.add_handler(CommandHandler("league", league_command_v15))
+    app.add_handler(CommandHandler("onboarding", league_command_v15))
+    app.add_handler(CommandHandler("advanced", advanced_command_v16))
     app.add_handler(CommandHandler("leagueranking", league_ranking_command_v15))
     app.add_handler(CommandHandler("resellers", resellers_command_v14))
     app.add_handler(CommandHandler("orders", orders_dashboard_command))
