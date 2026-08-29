@@ -1376,6 +1376,74 @@ async def is_admin_or_owner_v12(update, context):
 
 
 
+
+async def season_command_v17(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    stats = v17_season_stats(user_id)
+    ranking = v17_all_season_stats()
+    rank = next((i for i, s in enumerate(ranking, 1) if s["user_id"] == user_id), None)
+
+    lines = [
+        "🏁 <b>W1NNURS SEASON</b>",
+        f"<b>{v17_season_name()}</b>",
+        "",
+        f"⚡ Season Score: <b>{stats['score']}</b>",
+        f"📦 Completed orders: <b>{stats['orders']}</b>",
+        f"👕 Completed pieces: <b>{stats['pieces']}</b>",
+        f"🏷 Brands: <b>{stats['brands']}</b>",
+        f"🏆 Current rank: <b>#{rank}</b>" if rank else "🏆 Current rank: <b>Unranked</b>",
+        "",
+        "<i>Season Score resets every month. Permanent XP and league progress do not reset.</i>",
+    ]
+
+    buttons = [
+        [InlineKeyboardButton("🏆 SEASON LEADERBOARD", callback_data="v17seasonboard")],
+        [InlineKeyboardButton("🎯 MISSIONS", callback_data="v15league")],
+    ]
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def render_season_board_v17(query):
+    ranking = v17_all_season_stats()
+    lines = [
+        "🏆 <b>W1NNURS SEASON LEADERBOARD</b>",
+        f"<b>{v17_season_name()}</b>",
+        "",
+    ]
+
+    if not ranking:
+        lines.append("No completed seasonal orders yet.")
+    else:
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        for i, stats in enumerate(ranking[:20], 1):
+            icon = medals.get(i, f"{i}.")
+            name = html.escape(v17_display_name(stats["user_id"]))
+            lines.append(
+                f"{icon} <b>{name}</b> — {stats['score']} pts\n"
+                f"   {stats['pieces']} pcs • {stats['orders']} orders • {stats['brands']} brands"
+            )
+
+    lines.extend([
+        "",
+        "👑 <b>#1 = Season Champion</b>",
+        "<i>Ranking resets automatically with the new month.</i>",
+    ])
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 REFRESH", callback_data="v17seasonboard")],
+            [InlineKeyboardButton("🎯 MY MISSIONS", callback_data="v15league")],
+        ]),
+    )
+
+
+
 async def advanced_command_v16(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats=v161_league_stats(update.effective_user.id)
     done=stats["advanced_missions"]
@@ -1650,6 +1718,86 @@ async def render_admin_orders(query, filter_name="ACTIVE", page=0):
 
 # v15 — W1NNURS Reseller League
 # Beginner missions intentionally give XP/progress only — no material reward.
+
+
+
+# v17 — W1NNURS SEASONS
+# Seasonal competition is separate from permanent XP/tier progression.
+
+def v17_season_key():
+    from datetime import datetime
+    now = datetime.now()
+    return now.strftime("%Y-%m")
+
+
+def v17_season_name():
+    from datetime import datetime
+    now = datetime.now()
+    return now.strftime("%B %Y").upper()
+
+
+def v17_season_orders(user_id):
+    season = v17_season_key()
+    result = []
+    for order in orders.values():
+        if int(order.get("user_id", 0)) != int(user_id):
+            continue
+        if order.get("status") != "COMPLETED":
+            continue
+
+        # Newer orders may have timestamps; older orders without a timestamp
+        # still remain in permanent stats but do not inflate seasonal ranking.
+        stamp = str(
+            order.get("completed_at")
+            or order.get("updated_at")
+            or order.get("created_at")
+            or ""
+        )
+        if stamp.startswith(season):
+            result.append(order)
+    return result
+
+
+def v17_season_stats(user_id):
+    completed = v17_season_orders(user_id)
+    pieces = sum(
+        int(item.get("qty", 0))
+        for order in completed
+        for item in order.get("items", [])
+    )
+    brands = {
+        str(item.get("brand", "")).strip().lower()
+        for order in completed
+        for item in order.get("items", [])
+        if str(item.get("brand", "")).strip()
+    }
+    # Score rewards both activity and volume, without replacing permanent XP.
+    score = pieces * 10 + len(completed) * 25 + len(brands) * 15
+    return {
+        "user_id": int(user_id),
+        "orders": len(completed),
+        "pieces": pieces,
+        "brands": len(brands),
+        "score": score,
+    }
+
+
+def v17_all_season_stats():
+    user_ids = {
+        int(o.get("user_id", 0))
+        for o in orders.values()
+        if o.get("user_id")
+    }
+    stats = [v17_season_stats(uid) for uid in user_ids]
+    stats = [s for s in stats if s["score"] > 0]
+    stats.sort(key=lambda s: (s["score"], s["pieces"], s["orders"]), reverse=True)
+    return stats
+
+
+def v17_display_name(user_id):
+    stats = reseller_stats_v14(user_id)
+    return reseller_display_name_v14(stats)
+
 
 
 # v16.1 — Onboarding Missions
@@ -2349,6 +2497,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "v17seasonboard":
+        await query.answer()
+        await render_season_board_v17(query)
+        return
+
     if data.startswith("v161research:"):
         parts = data.split(":", 2)
         kind = parts[1]
@@ -2483,6 +2636,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         order["status"] = next_status
+        if next_status == "COMPLETED":
+            from datetime import datetime
+            order["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        order["updated_at"] = __import__("datetime").datetime.now().isoformat(timespec="seconds")
         save_order(order)
         await notify_order_status_v13(context, order)
         await query.answer("Status updated.")
@@ -2508,6 +2665,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         order["status"] = previous_status
+        if current == "COMPLETED":
+            order.pop("completed_at", None)
+        order["updated_at"] = __import__("datetime").datetime.now().isoformat(timespec="seconds")
         save_order(order)
         await notify_order_status_v13(context, order)
         await query.answer("Status moved back.")
@@ -3027,6 +3187,7 @@ def main():
     app.add_handler(CommandHandler("myorders", myorders_command_v12))
     app.add_handler(CommandHandler("profile", profile_command_v14))
     app.add_handler(CommandHandler("league", league_command_v15))
+    app.add_handler(CommandHandler("season", season_command_v17))
     app.add_handler(CommandHandler("onboarding", league_command_v15))
     app.add_handler(CommandHandler("advanced", advanced_command_v16))
     app.add_handler(CommandHandler("leagueranking", league_ranking_command_v15))
