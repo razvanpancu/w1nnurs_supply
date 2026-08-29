@@ -1372,6 +1372,133 @@ async def is_admin_or_owner_v12(update, context):
 
 
 
+
+
+async def league_command_v15(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stats = v15_league_stats(update.effective_user.id)
+    done = stats["missions"]
+    next_min, next_label, remaining = v15_next_level(stats["xp"])
+
+    lines = [
+        "🏆 <b>W1NNURS RESELLER LEAGUE</b>",
+        "",
+        f"League: <b>{stats['league']}</b>",
+        f"XP: <b>{stats['xp']}</b>",
+        "",
+        "🎯 <b>BEGINNER MISSIONS</b>",
+        "<i>These missions give XP & progress only.</i>",
+        "",
+    ]
+
+    for key, title, description, xp in V15_BEGINNER_MISSIONS:
+        icon = "✅" if done.get(key) else "⬜"
+        lines.append(
+            f"{icon} <b>{title}</b> • +{xp} XP\n"
+            f"   {description}"
+        )
+
+    if next_min is not None:
+        lines.extend([
+            "",
+            f"🚀 Next league: <b>{next_label}</b>",
+            f"Need <b>{remaining} XP</b> more.",
+        ])
+    else:
+        lines.extend(["", "👑 <b>Top league reached.</b>"])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 MY ORDERS", callback_data="myorders")],
+            [InlineKeyboardButton("🏆 MY PROFILE", callback_data="v15profile")],
+        ]),
+    )
+
+
+async def league_ranking_command_v15(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin_or_owner_v12(update, context):
+        await update.message.reply_text("Admin only.")
+        return
+
+    stats_list = v15_all_league_stats()
+    lines = [
+        "🏆 <b>W1NNURS LEAGUE — ADMIN</b>",
+        "",
+        f"Resellers: <b>{len(stats_list)}</b>",
+        "",
+    ]
+
+    for idx, stats in enumerate(stats_list[:20], 1):
+        lines.append(
+            f"{idx}. <b>{html.escape(reseller_display_name_v14(stats))}</b> — "
+            f"{stats['league']} • <b>{stats['xp']} XP</b>"
+        )
+
+    if not stats_list:
+        lines.append("No reseller activity yet.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+
+async def profile_command_v14(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(
+            "🏆 Open W1NNURS Supply Bot privately to view your reseller profile.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🏆 MY PROFILE",
+                    url=f"https://t.me/{BOT_USERNAME}?start=profile"
+                )]
+            ]),
+        )
+        return
+
+    stats = reseller_stats_v14(update.effective_user.id)
+    next_min, next_label, remaining = next_tier_progress_v14(stats["pieces_completed"])
+
+    lines = [
+        "🏆 <b>W1NNURS RESELLER PROFILE</b>",
+        "",
+        f"Reseller: <b>{html.escape(reseller_display_name_v14(stats))}</b>",
+        f"Tier: <b>{stats['tier']}</b>",
+        "",
+        f"📦 Orders: <b>{stats['orders_total']}</b>",
+        f"✅ Completed: <b>{stats['orders_completed']}</b>",
+        f"🔥 Active: <b>{stats['orders_active']}</b>",
+        f"👕 Total pieces ordered: <b>{stats['pieces_total']}</b>",
+        f"🏁 Completed pieces: <b>{stats['pieces_completed']}</b>",
+    ]
+
+    if stats["last_order_id"]:
+        lines.append(f"🧾 Last order: <code>#O{stats['last_order_id']}</code>")
+
+    if next_min is not None:
+        lines.extend([
+            "",
+            f"🎯 Next tier: <b>{next_label}</b>",
+            f"Need <b>{remaining}</b> more completed piece{'s' if remaining != 1 else ''}.",
+        ])
+    else:
+        lines.extend([
+            "",
+            "👑 <b>Maximum reseller tier reached.</b>",
+        ])
+
+    buttons = [
+        [InlineKeyboardButton("📋 MY ORDERS", callback_data="myorders")],
+        [InlineKeyboardButton("📦 LIVE STOCK", callback_data="stock")],
+    ]
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+
 async def myorders_command_v12(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         await update.message.reply_text(
@@ -1492,6 +1619,222 @@ async def render_admin_orders(query, filter_name="ACTIVE", page=0):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
+
+
+
+
+
+# v15 — W1NNURS Reseller League
+# Beginner missions intentionally give XP/progress only — no material reward.
+
+V15_BEGINNER_MISSIONS = [
+    ("FIRST_ORDER", "🛒 First Move", "Submit your first order", 25),
+    ("FIRST_COMPLETE", "✅ First Win", "Complete your first order", 50),
+    ("FIVE_PIECES", "👕 Starter Pack", "Complete 5 pieces", 75),
+    ("TWO_BRANDS", "🏷 Brand Explorer", "Complete orders containing 2 different brands", 60),
+    ("THREE_ORDERS", "🔥 Getting Serious", "Complete 3 orders", 100),
+]
+
+V15_LEVELS = [
+    (1200, "👑 Elite League"),
+    (700, "💎 Dynasty League"),
+    (350, "🏆 Champion League"),
+    (150, "🥇 Winner League"),
+    (0, "🥉 Rookie League"),
+]
+
+
+def v15_completed_orders(user_id):
+    return [
+        o for o in orders.values()
+        if int(o.get("user_id", 0)) == int(user_id)
+        and o.get("status") == "COMPLETED"
+    ]
+
+
+def v15_non_declined_orders(user_id):
+    return [
+        o for o in orders.values()
+        if int(o.get("user_id", 0)) == int(user_id)
+        and o.get("status") != "DECLINED"
+    ]
+
+
+def v15_mission_state(user_id):
+    completed = v15_completed_orders(user_id)
+    submitted = v15_non_declined_orders(user_id)
+
+    completed_pieces = sum(
+        int(item.get("qty", 0))
+        for o in completed
+        for item in o.get("items", [])
+    )
+    brands = {
+        str(item.get("brand", "")).strip().lower()
+        for o in completed
+        for item in o.get("items", [])
+        if str(item.get("brand", "")).strip()
+    }
+
+    done = {
+        "FIRST_ORDER": len(submitted) >= 1,
+        "FIRST_COMPLETE": len(completed) >= 1,
+        "FIVE_PIECES": completed_pieces >= 5,
+        "TWO_BRANDS": len(brands) >= 2,
+        "THREE_ORDERS": len(completed) >= 3,
+    }
+
+    xp = sum(xp for key, _, _, xp in V15_BEGINNER_MISSIONS if done.get(key))
+    return done, xp
+
+
+def v15_level(xp):
+    for minimum, label in V15_LEVELS:
+        if xp >= minimum:
+            return label
+    return "🥉 Rookie League"
+
+
+def v15_next_level(xp):
+    ascending = [
+        (0, "🥉 Rookie League"),
+        (150, "🥇 Winner League"),
+        (350, "🏆 Champion League"),
+        (700, "💎 Dynasty League"),
+        (1200, "👑 Elite League"),
+    ]
+    for minimum, label in ascending:
+        if xp < minimum:
+            return minimum, label, minimum - xp
+    return None, None, 0
+
+
+def v15_league_stats(user_id):
+    base = reseller_stats_v14(user_id)
+    missions, xp = v15_mission_state(user_id)
+    base["missions"] = missions
+    base["xp"] = xp
+    base["league"] = v15_level(xp)
+    return base
+
+
+def v15_all_league_stats():
+    user_ids = {
+        int(o.get("user_id", 0))
+        for o in orders.values()
+        if o.get("user_id")
+    }
+    stats = [v15_league_stats(uid) for uid in user_ids]
+    stats.sort(
+        key=lambda s: (
+            int(s["xp"]),
+            int(s["pieces_completed"]),
+            int(s["orders_completed"]),
+        ),
+        reverse=True,
+    )
+    return stats
+
+
+
+RESELLER_TIERS_V14 = [
+    (60, "👑 W1NNURS Elite"),
+    (30, "💎 Dynasty"),
+    (15, "🏆 Champion"),
+    (5, "🥇 Winner"),
+    (0, "🥉 Member"),
+]
+
+
+def reseller_tier_v14(completed_pieces):
+    completed_pieces = int(completed_pieces or 0)
+    for minimum, label in RESELLER_TIERS_V14:
+        if completed_pieces >= minimum:
+            return label
+    return "🥉 Member"
+
+
+def reseller_stats_v14(user_id):
+    user_orders = [
+        o for o in orders.values()
+        if int(o.get("user_id", 0)) == int(user_id)
+    ]
+    user_orders.sort(key=lambda o: int(o.get("order_id", 0)))
+
+    non_declined = [o for o in user_orders if o.get("status") != "DECLINED"]
+    completed = [o for o in user_orders if o.get("status") == "COMPLETED"]
+    active = [
+        o for o in user_orders
+        if o.get("status") not in ("COMPLETED", "DECLINED")
+    ]
+
+    total_pieces = sum(
+        int(item.get("qty", 0))
+        for o in non_declined
+        for item in o.get("items", [])
+    )
+    completed_pieces = sum(
+        int(item.get("qty", 0))
+        for o in completed
+        for item in o.get("items", [])
+    )
+
+    latest = user_orders[-1] if user_orders else None
+    sample = latest or (user_orders[0] if user_orders else None)
+
+    return {
+        "user_id": int(user_id),
+        "username": (sample or {}).get("username"),
+        "first_name": (sample or {}).get("first_name"),
+        "orders_total": len(non_declined),
+        "orders_completed": len(completed),
+        "orders_active": len(active),
+        "pieces_total": total_pieces,
+        "pieces_completed": completed_pieces,
+        "last_order_id": latest.get("order_id") if latest else None,
+        "tier": reseller_tier_v14(completed_pieces),
+    }
+
+
+def all_reseller_stats_v14():
+    user_ids = sorted({
+        int(o.get("user_id", 0))
+        for o in orders.values()
+        if o.get("user_id")
+    })
+    stats = [reseller_stats_v14(uid) for uid in user_ids]
+    stats.sort(
+        key=lambda s: (
+            int(s["pieces_completed"]),
+            int(s["orders_completed"]),
+            int(s["pieces_total"]),
+        ),
+        reverse=True,
+    )
+    return stats
+
+
+def reseller_display_name_v14(stats):
+    if stats.get("username"):
+        return f"@{stats['username']}"
+    if stats.get("first_name"):
+        return str(stats["first_name"])
+    return str(stats["user_id"])
+
+
+def next_tier_progress_v14(completed_pieces):
+    completed_pieces = int(completed_pieces or 0)
+    ascending = [
+        (0, "🥉 Member"),
+        (5, "🥇 Winner"),
+        (15, "🏆 Champion"),
+        (30, "💎 Dynasty"),
+        (60, "👑 W1NNURS Elite"),
+    ]
+    for minimum, label in ascending:
+        if completed_pieces < minimum:
+            return minimum, label, minimum - completed_pieces
+    return None, None, 0
 
 
 
@@ -1625,6 +1968,128 @@ async def render_admin_order_detail(query, order_id, filter_name="ACTIVE", page=
     )
 
 
+
+async def render_resellers_dashboard_v14(query, page=0):
+    stats_list = all_reseller_stats_v14()
+    per_page = 8
+    page = max(int(page), 0)
+    start = page * per_page
+    chunk = stats_list[start:start + per_page]
+
+    lines = [
+        "🏆 <b>W1NNURS RESELLER RANKING</b>",
+        "",
+        f"Resellers: <b>{len(stats_list)}</b>",
+        "Ranking is based on completed pieces.",
+        "",
+    ]
+    buttons = []
+
+    if not chunk:
+        lines.append("No reseller data yet.")
+    else:
+        for idx, stats in enumerate(chunk, start=start + 1):
+            name = reseller_display_name_v14(stats)
+            lines.append(
+                f"{idx}. <b>{html.escape(name)}</b>\n"
+                f"   {stats['tier']} • "
+                f"{stats['pieces_completed']} completed pcs • "
+                f"{stats['orders_completed']} completed orders"
+            )
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{idx}. {name} • View",
+                    callback_data=f"v14reseller:{stats['user_id']}:{page}"
+                )
+            ])
+
+    nav = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton("⬅️", callback_data=f"v14resellers:{page-1}")
+        )
+    if start + per_page < len(stats_list):
+        nav.append(
+            InlineKeyboardButton("➡️", callback_data=f"v14resellers:{page+1}")
+        )
+    if nav:
+        buttons.append(nav)
+
+    buttons.append([
+        InlineKeyboardButton("🔄 REFRESH", callback_data=f"v14resellers:{page}")
+    ])
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def render_reseller_detail_v14(query, user_id, page=0):
+    stats = reseller_stats_v14(user_id)
+    name = reseller_display_name_v14(stats)
+    next_min, next_label, remaining = next_tier_progress_v14(stats["pieces_completed"])
+
+    lines = [
+        "👤 <b>RESELLER PROFILE</b>",
+        "",
+        f"Reseller: <b>{html.escape(name)}</b>",
+        f"User ID: <code>{stats['user_id']}</code>",
+        f"Tier: <b>{stats['tier']}</b>",
+        "",
+        f"📦 Orders: <b>{stats['orders_total']}</b>",
+        f"✅ Completed: <b>{stats['orders_completed']}</b>",
+        f"🔥 Active: <b>{stats['orders_active']}</b>",
+        f"👕 Total pieces: <b>{stats['pieces_total']}</b>",
+        f"🏁 Completed pieces: <b>{stats['pieces_completed']}</b>",
+    ]
+
+    if stats["last_order_id"]:
+        lines.append(f"🧾 Last order: <code>#O{stats['last_order_id']}</code>")
+
+    if next_min is not None:
+        lines.extend([
+            "",
+            f"🎯 Next tier: <b>{next_label}</b>",
+            f"Remaining: <b>{remaining}</b> completed pcs",
+        ])
+
+    buttons = [
+        [InlineKeyboardButton("💬 OPEN USER", url=f"tg://user?id={stats['user_id']}")],
+        [InlineKeyboardButton("⬅️ BACK TO RANKING", callback_data=f"v14resellers:{page}")],
+    ]
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def resellers_command_v14(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin_or_owner_v12(update, context):
+        await update.message.reply_text("Admin only.")
+        return
+
+    class CommandQuery:
+        def __init__(self, message, user):
+            self.message = message
+            self.from_user = user
+
+        async def edit_message_text(self, *args, **kwargs):
+            return await self.message.edit_text(*args, **kwargs)
+
+        async def answer(self, *args, **kwargs):
+            return None
+
+    msg = await update.message.reply_text("Loading reseller ranking...")
+    await render_resellers_dashboard_v14(
+        CommandQuery(msg, update.effective_user), 0
+    )
+
+
+
 async def orders_dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin_or_owner_v12(update, context):
         await update.message.reply_text("Admin only.")
@@ -1721,6 +2186,77 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             int(row_num),
             int(brand_page),
         )
+        return
+
+    if data == "v15profile":
+        await query.answer()
+        stats = reseller_stats_v14(query.from_user.id)
+        next_min, next_label, remaining = next_tier_progress_v14(stats["pieces_completed"])
+        lines = [
+            "🏆 <b>W1NNURS RESELLER PROFILE</b>",
+            "",
+            f"Reseller: <b>{html.escape(reseller_display_name_v14(stats))}</b>",
+            f"Tier: <b>{stats['tier']}</b>",
+            f"📦 Orders: <b>{stats['orders_total']}</b>",
+            f"✅ Completed: <b>{stats['orders_completed']}</b>",
+            f"👕 Completed pieces: <b>{stats['pieces_completed']}</b>",
+        ]
+        if next_min is not None:
+            lines.extend(["", f"🎯 Next tier: <b>{next_label}</b> • {remaining} pcs remaining"])
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎯 RESELLER LEAGUE", callback_data="v15league")]
+            ]),
+        )
+        return
+
+    if data == "v15league":
+        await query.answer()
+        stats = v15_league_stats(query.from_user.id)
+        done = stats["missions"]
+        next_min, next_label, remaining = v15_next_level(stats["xp"])
+        lines = [
+            "🏆 <b>W1NNURS RESELLER LEAGUE</b>",
+            "",
+            f"League: <b>{stats['league']}</b>",
+            f"XP: <b>{stats['xp']}</b>",
+            "",
+            "🎯 <b>BEGINNER MISSIONS</b>",
+            "<i>XP & progress only — no reward.</i>",
+            "",
+        ]
+        for key, title, description, xp in V15_BEGINNER_MISSIONS:
+            icon = "✅" if done.get(key) else "⬜"
+            lines.append(f"{icon} <b>{title}</b> • +{xp} XP\n   {description}")
+        if next_min is not None:
+            lines.extend(["", f"🚀 Next league: <b>{next_label}</b> • {remaining} XP remaining"])
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏆 MY PROFILE", callback_data="v15profile")]
+            ]),
+        )
+        return
+
+    if data.startswith("v14resellers:"):
+        if query.from_user.id not in ADMIN_IDS:
+            await query.answer("Admin only.", show_alert=True)
+            return
+        _, page_raw = data.split(":", 1)
+        await query.answer()
+        await render_resellers_dashboard_v14(query, int(page_raw))
+        return
+
+    if data.startswith("v14reseller:"):
+        if query.from_user.id not in ADMIN_IDS:
+            await query.answer("Admin only.", show_alert=True)
+            return
+        _, user_id_raw, page_raw = data.split(":", 2)
+        await query.answer()
+        await render_reseller_detail_v14(query, int(user_id_raw), int(page_raw))
         return
 
     if data.startswith("v13next:"):
@@ -2283,6 +2819,10 @@ def main():
     app.add_handler(CommandHandler("welcome", welcome_command))
     app.add_handler(CommandHandler("watchstatus", watch_status_command))
     app.add_handler(CommandHandler("myorders", myorders_command_v12))
+    app.add_handler(CommandHandler("profile", profile_command_v14))
+    app.add_handler(CommandHandler("league", league_command_v15))
+    app.add_handler(CommandHandler("leagueranking", league_ranking_command_v15))
+    app.add_handler(CommandHandler("resellers", resellers_command_v14))
     app.add_handler(CommandHandler("orders", orders_dashboard_command))
     app.add_handler(CommandHandler("dbstatus", dbstatus_command))
     app.add_handler(CommandHandler("id", id_command))
